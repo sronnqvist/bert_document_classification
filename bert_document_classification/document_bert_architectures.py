@@ -12,6 +12,7 @@ class DocumentBertLSTM(BertPreTrainedModel):
     def __init__(self, bert_model_config: BertConfig):
         super(DocumentBertLSTM, self).__init__(bert_model_config)
         self.bert = BertModel(bert_model_config)
+        self.bert.cuda()
         self.bert_batch_size= self.bert.config.bert_batch_size
         self.dropout = nn.Dropout(p=bert_model_config.hidden_dropout_prob)
         self.lstm = LSTM(bert_model_config.hidden_size,bert_model_config.hidden_size, )
@@ -58,6 +59,7 @@ class DocumentBertLinear(BertPreTrainedModel):
     def __init__(self, bert_model_config: BertConfig):
         super(DocumentBertLinear, self).__init__(bert_model_config)
         self.bert = BertModel(bert_model_config)
+        self.bert.cuda()
         self.bert_batch_size= self.bert.config.bert_batch_size
         self.dropout = nn.Dropout(p=bert_model_config.hidden_dropout_prob)
 
@@ -100,6 +102,7 @@ class DocumentBertMaxPool(BertPreTrainedModel):
     def __init__(self, bert_model_config: BertConfig):
         super(DocumentBertMaxPool, self).__init__(bert_model_config)
         self.bert = BertModel(bert_model_config)
+        self.bert.cuda()
         self.bert_batch_size= self.bert.config.bert_batch_size
         self.dropout = nn.Dropout(p=bert_model_config.hidden_dropout_prob)
 
@@ -145,6 +148,7 @@ class DocumentBertTransformer(BertPreTrainedModel):
     def __init__(self, bert_model_config: BertConfig):
         super(DocumentBertTransformer, self).__init__(bert_model_config)
         self.bert = BertModel(bert_model_config)
+        self.bert.cuda()
         self.bert_batch_size= self.bert.config.bert_batch_size
         self.dropout = nn.Dropout(p=bert_model_config.hidden_dropout_prob)
 

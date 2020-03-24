@@ -1,14 +1,16 @@
 from pytorch_transformers.modeling_bert import BertPreTrainedModel, BertConfig, BertModel
 from pytorch_transformers.modeling_utils import WEIGHTS_NAME, CONFIG_NAME
 from pytorch_transformers.tokenization_bert import BertTokenizer
+#from tokenizers import BertWordPieceTokenizer as BertTokenizer
 from torch import nn
 import torch,math,logging,os
 from sklearn.metrics import f1_score, precision_score, recall_score
+import numpy as np
 
 
 from .document_bert_architectures import DocumentBertLSTM, DocumentBertLinear, DocumentBertTransformer, DocumentBertMaxPool
 
-def encode_documents(documents: list, tokenizer: BertTokenizer, max_input_length=512):
+def encode_documents(documents: list, tokenizer: BertTokenizer, max_input_length=512, name='unknown'):
     """
     Returns a len(documents) * max_sequences_per_document * 3 * 512 tensor where len(documents) is the batch
     dimension and the others encode bert input.
@@ -19,17 +21,27 @@ def encode_documents(documents: list, tokenizer: BertTokenizer, max_input_length
     :param tokenizer: the sentence piece bert tokenizer
     :return:
     """
-    tokenized_documents = [tokenizer.tokenize(document) for document in documents]
-    max_sequences_per_document = math.ceil(max(len(x)/(max_input_length-2) for x in tokenized_documents))
-    assert max_sequences_per_document <= 20, "Your document is to large, arbitrary size when writing"
+    #tokenized_documents = [tokenizer.tokenize(document) for document in documents]
+    #tokenized_documents = [tokenizer.encode(document) for document in documents]
+    max_sequences_per_document = 20#math.ceil(max(len(x)/(max_input_length-2) for x in tokenized_documents))
+    #assert max_sequences_per_document <= 20, "Your document is to large, arbitrary size when writing"
 
     output = torch.zeros(size=(len(documents), max_sequences_per_document, 3, 512), dtype=torch.long)
     document_seq_lengths = [] #number of sequence generated per document
     #Need to use 510 to account for 2 padding tokens
-    for doc_index, tokenized_document in enumerate(tokenized_documents):
+    tokenized_documents = []
+    for doc_index, document in enumerate(documents):
+        if doc_index % 100 == 0:
+            logging.info("Tokenizing %d" % doc_index)
+        tokenized_document = tokenizer.tokenize(document)
+
         max_seq_index = 0
         for seq_index, i in enumerate(range(0, len(tokenized_document), (max_input_length-2))):
+            if seq_index >= max_sequences_per_document:
+                logging.info("Reached max seq count for doc with %s tokens." % len(tokenized_document))
+                break
             raw_tokens = tokenized_document[i:i+(max_input_length-2)]
+            #raw_tokens = tokenized_document.ids[i:i+(max_input_length-2)]
             tokens = []
             input_type_ids = []
 
@@ -58,6 +70,8 @@ def encode_documents(documents: list, tokenizer: BertTokenizer, max_input_length
                                                           dim=0)
             max_seq_index = seq_index
         document_seq_lengths.append(max_seq_index+1)
+    torch.save(output, "%s_doc_encodings.pt" % name)
+    torch.save(torch.LongTensor(document_seq_lengths), "%s_doc_lengths.pt" % name)
     return output, torch.LongTensor(document_seq_lengths)
 
 
@@ -105,6 +119,10 @@ class BertForDocumentClassification():
 
         self.log = logging.getLogger()
         self.bert_tokenizer = BertTokenizer.from_pretrained(self.args['bert_model_path'])
+        #self.bert_tokenizer = BertTokenizer("/home/samuel/code/regbert/bert-base-uncased-vocab.txt", lowercase=True, )
+        self.dev_document_representations = None
+        self.dev_document_sequence_lengths = None
+        self.dev_correct_output = None
 
 
         #account for some random tensorflow naming scheme
@@ -151,7 +169,12 @@ class BertForDocumentClassification():
 
         self.bert_doc_classification.train()
 
-        document_representations, document_sequence_lengths  = encode_documents(train_documents, self.bert_tokenizer)
+        try:
+            document_representations = torch.load("train_doc_encodings.pt")
+            document_sequence_lengths = torch.load("train_doc_lengths.pt")
+            self.log.info("Loaded pre-tokenized training data.")
+        except FileNotFoundError:
+            document_representations, document_sequence_lengths  = encode_documents(train_documents, self.bert_tokenizer, name="train")
 
         correct_output = torch.FloatTensor(train_labels)
 
@@ -163,8 +186,10 @@ class BertForDocumentClassification():
         if torch.cuda.device_count() > 1:
             self.bert_doc_classification = torch.nn.DataParallel(self.bert_doc_classification)
         self.bert_doc_classification.to(device=self.args['device'])
+        self.bert_doc_classification.cuda()
 
         for epoch in range(1,self.args['epochs']+1):
+            self.log.info("Training epoch %d" % epoch)
             # shuffle
             permutation = torch.randperm(document_representations.shape[0])
             document_representations = document_representations[permutation]
@@ -174,7 +199,8 @@ class BertForDocumentClassification():
             self.epoch = epoch
             epoch_loss = 0.0
             for i in range(0, document_representations.shape[0], self.args['batch_size']):
-
+                if i % 100 == 0:
+                    self.log.info("  batch %d" % i)
                 batch_document_tensors = document_representations[i:i + self.args['batch_size']].to(device=self.args['device'])
                 batch_document_sequence_lengths= document_sequence_lengths[i:i+self.args['batch_size']]
                 #self.log.info(batch_document_tensors.shape)
@@ -210,24 +236,38 @@ class BertForDocumentClassification():
         :param data:
         :return:
         """
-        document_representations = None
-        document_sequence_lengths = None
-        correct_output = None
-        if isinstance(data, list):
-            document_representations, document_sequence_lengths = encode_documents(data, self.bert_tokenizer)
-        if isinstance(data, tuple) and len(data) == 2:
-            self.log.info('Evaluating on Epoch %i' % (self.epoch))
-            document_representations, document_sequence_lengths = encode_documents(data[0], self.bert_tokenizer)
-            correct_output = torch.FloatTensor(data[1]).transpose(0,1)
-            assert self.args['labels'] is not None
+        self.log.info('Evaluating on Epoch %i' % (self.epoch))
+        if self.dev_document_representations is None:
+            if isinstance(data, list):
+                try:
+                    self.dev_document_representations = torch.load("dev_doc_encodings.pt")
+                    self.dev_document_sequence_lengths = torch.load("dev_doc_lengths.pt")
+                    self.log.info("Loaded pre-tokenized validation data.")
+                except FileNotFoundError:
+                    self.dev_document_representations, self.dev_document_sequence_lengths = encode_documents(data, self.bert_tokenizer, name="dev")
+            if isinstance(data, tuple) and len(data) == 2:
+                try:
+                    self.dev_document_representations = torch.load("dev_doc_encodings.pt")
+                    self.dev_document_sequence_lengths = torch.load("dev_doc_lengths.pt")
+                    self.log.info("Loaded pre-tokenized validation data.")
+                except FileNotFoundError:
+                    self.dev_document_representations, self.dev_document_sequence_lengths = encode_documents(data[0], self.bert_tokenizer, name="dev")
+
+                self.dev_correct_output = torch.FloatTensor(data[1]).transpose(0,1)
+                assert self.args['labels'] is not None
+            torch.save(self.dev_correct_output, os.path.join(self.args['model_directory'], "dev_gold.pt"))
+
+        self.log.info('  %i documents' % len(self.dev_document_representations))
 
         self.bert_doc_classification.to(device=self.args['device'])
         self.bert_doc_classification.eval()
         with torch.no_grad():
-            predictions = torch.empty((document_representations.shape[0], len(self.args['labels'])))
-            for i in range(0, document_representations.shape[0], self.args['batch_size']):
-                batch_document_tensors = document_representations[i:i + self.args['batch_size']].to(device=self.args['device'])
-                batch_document_sequence_lengths= document_sequence_lengths[i:i+self.args['batch_size']]
+            predictions = torch.empty((self.dev_document_representations.shape[0], len(self.args['labels'])))
+            for i in range(0, self.dev_document_representations.shape[0], self.args['batch_size']):
+                if i % self.args['batch_size']*100 == 0:
+                    self.log.info("  doc %d" % i)
+                batch_document_tensors = self.dev_document_representations[i:i + self.args['batch_size']].to(device=self.args['device'])
+                batch_document_sequence_lengths= self.dev_document_sequence_lengths[i:i+self.args['batch_size']]
 
                 prediction = self.bert_doc_classification(batch_document_tensors,
                                                           batch_document_sequence_lengths,device=self.args['device'])
@@ -241,17 +281,17 @@ class BertForDocumentClassification():
                     predictions[r][c] = 0
         predictions = predictions.transpose(0, 1)
 
-
-        if correct_output is None:
+        self.bert_doc_classification.train()
+        if self.dev_correct_output is None:
             return predictions.cpu()
         else:
-            assert correct_output.shape == predictions.shape
+            assert self.dev_correct_output.shape == predictions.shape
             precisions = []
             recalls = []
             fmeasures = []
 
             for label_idx in range(predictions.shape[0]):
-                correct = correct_output[label_idx].cpu().view(-1).numpy()
+                correct = self.dev_correct_output[label_idx].cpu().view(-1).numpy()
                 predicted = predictions[label_idx].cpu().view(-1).numpy()
                 present_f1_score = f1_score(correct, predicted, average='binary', pos_label=1)
                 present_precision_score = precision_score(correct, predicted, average='binary', pos_label=1)
@@ -260,10 +300,11 @@ class BertForDocumentClassification():
                 precisions.append(present_precision_score)
                 recalls.append(present_recall_score)
                 fmeasures.append(present_f1_score)
-                logging.info('F1\t%s\t%f' % (self.args['labels'][label_idx], present_f1_score))
+                #logging.info('F1\t%s\t%f' % (self.args['labels'][label_idx], present_f1_score))
 
-            micro_f1 = f1_score(correct_output.reshape(-1).numpy(), predictions.reshape(-1).numpy(), average='micro')
-            macro_f1 = f1_score(correct_output.reshape(-1).numpy(), predictions.reshape(-1).numpy(), average='macro')
+            micro_f1 = f1_score(self.dev_correct_output.T.numpy(), predictions.T.numpy(), average='micro')
+            macro_f1 = f1_score(self.dev_correct_output.T.numpy(), predictions.T.numpy(), average='macro')
+            self.log.info('Micro F1\t%f' % (micro_f1))
 
             if 'use_tensorboard' in self.args and self.args['use_tensorboard']:
                 for label_idx in range(predictions.shape[0]):
@@ -280,8 +321,9 @@ class BertForDocumentClassification():
                 eval_results.write('F1\t' + '\t'.join([ str(fmeasures[label_idx]) for label_idx in range(predictions.shape[0])]) + '\n' )
                 eval_results.write('Micro-F1\t' + str(micro_f1) + '\n' )
                 eval_results.write('Macro-F1\t' + str(macro_f1) + '\n' )
+            #np.savetxt(os.path.join(self.args['model_directory'], "predictions_%s.txt" % self.epoch), predictions.numpy(), delimiter='\t')
+            torch.save(predictions, os.path.join(self.args['model_directory'], "predictions_%s.pt" % self.epoch))
 
-        self.bert_doc_classification.train()
 
     def save_checkpoint(self, checkpoint_path: str):
         """
@@ -303,24 +345,3 @@ class BertForDocumentClassification():
         net.config.to_json_file(os.path.join(checkpoint_path, CONFIG_NAME))
         #save exact vocabulary utilized
         self.bert_tokenizer.save_vocabulary(checkpoint_path)
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
