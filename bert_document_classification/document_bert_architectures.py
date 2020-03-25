@@ -12,7 +12,7 @@ class DocumentBertLSTM(BertPreTrainedModel):
     def __init__(self, bert_model_config: BertConfig):
         super(DocumentBertLSTM, self).__init__(bert_model_config)
         self.bert = BertModel(bert_model_config)
-        self.bert.cuda()
+        #self.bert.cuda()
         self.bert_batch_size= self.bert.config.bert_batch_size
         self.dropout = nn.Dropout(p=bert_model_config.hidden_dropout_prob)
         self.lstm = LSTM(bert_model_config.hidden_size,bert_model_config.hidden_size, )
@@ -35,12 +35,16 @@ class DocumentBertLSTM(BertPreTrainedModel):
         #this means that we are possibly cutting off the last part of documents.
         use_grad = not freeze_bert
         with torch.set_grad_enabled(False):
-            for doc_id in range(document_batch.shape[0]):
-                bert_output[doc_id][:self.bert_batch_size] = self.dropout(self.bert(document_batch[doc_id][:self.bert_batch_size,0],
-                                                token_type_ids=document_batch[doc_id][:self.bert_batch_size,1],
-                                                attention_mask=document_batch[doc_id][:self.bert_batch_size,2])[1])
+            #for doc_id in range(document_batch.shape[0]):
+            #bert_output[doc_id][:self.bert_batch_size] = self.dropout(self.bert(document_batch[doc_id][:self.bert_batch_size,0],
+            #                                token_type_ids=document_batch[doc_id][:self.bert_batch_size,1],
+            #                                attention_mask=document_batch[doc_id][:self.bert_batch_size,2])[1])
+            batch_size = document_batch.shape[0]
+            input_ids, token_type_ids, attn_mask = document_batch.reshape(-1,document_batch.shape[-2],document_batch.shape[-1]).permute(1,0,2)
+            bert_output = self.dropout(self.bert(input_ids, token_type_ids=token_type_ids, attention_mask=attn_mask)[0].mean(axis=1))
 
-        output, (_, _) = self.lstm(bert_output.permute(1,0,2))
+
+        output, (_, _) = self.lstm(bert_output.reshape([batch_size,-1,bert_output.shape[-1]]).permute(1,0,2))
 
         last_layer = output[-1]
         #print("Last LSTM layer shape:",last_layer.shape)
@@ -59,7 +63,7 @@ class DocumentBertLinear(BertPreTrainedModel):
     def __init__(self, bert_model_config: BertConfig):
         super(DocumentBertLinear, self).__init__(bert_model_config)
         self.bert = BertModel(bert_model_config)
-        self.bert.cuda()
+        #self.bert.cuda()
         self.bert_batch_size= self.bert.config.bert_batch_size
         self.dropout = nn.Dropout(p=bert_model_config.hidden_dropout_prob)
 
@@ -102,7 +106,7 @@ class DocumentBertMaxPool(BertPreTrainedModel):
     def __init__(self, bert_model_config: BertConfig):
         super(DocumentBertMaxPool, self).__init__(bert_model_config)
         self.bert = BertModel(bert_model_config)
-        self.bert.cuda()
+        #self.bert.cuda()
         self.bert_batch_size= self.bert.config.bert_batch_size
         self.dropout = nn.Dropout(p=bert_model_config.hidden_dropout_prob)
 
@@ -148,7 +152,7 @@ class DocumentBertTransformer(BertPreTrainedModel):
     def __init__(self, bert_model_config: BertConfig):
         super(DocumentBertTransformer, self).__init__(bert_model_config)
         self.bert = BertModel(bert_model_config)
-        self.bert.cuda()
+        #self.bert.cuda()
         self.bert_batch_size= self.bert.config.bert_batch_size
         self.dropout = nn.Dropout(p=bert_model_config.hidden_dropout_prob)
 

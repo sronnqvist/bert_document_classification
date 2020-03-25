@@ -10,7 +10,7 @@ import numpy as np
 
 from .document_bert_architectures import DocumentBertLSTM, DocumentBertLinear, DocumentBertTransformer, DocumentBertMaxPool
 
-def encode_documents(documents: list, tokenizer: BertTokenizer, max_input_length=512, name='unknown'):
+def encode_documents(documents: list, tokenizer: BertTokenizer, max_input_length=512, max_sequences=16, name='unknown'):
     """
     Returns a len(documents) * max_sequences_per_document * 3 * 512 tensor where len(documents) is the batch
     dimension and the others encode bert input.
@@ -23,7 +23,7 @@ def encode_documents(documents: list, tokenizer: BertTokenizer, max_input_length
     """
     #tokenized_documents = [tokenizer.tokenize(document) for document in documents]
     #tokenized_documents = [tokenizer.encode(document) for document in documents]
-    max_sequences_per_document = 20#math.ceil(max(len(x)/(max_input_length-2) for x in tokenized_documents))
+    max_sequences_per_document = max_sequences #math.ceil(max(len(x)/(max_input_length-2) for x in tokenized_documents))
     #assert max_sequences_per_document <= 20, "Your document is to large, arbitrary size when writing"
 
     output = torch.zeros(size=(len(documents), max_sequences_per_document, 3, 512), dtype=torch.long)
@@ -174,7 +174,7 @@ class BertForDocumentClassification():
             document_sequence_lengths = torch.load("train_doc_lengths.pt")
             self.log.info("Loaded pre-tokenized training data.")
         except FileNotFoundError:
-            document_representations, document_sequence_lengths  = encode_documents(train_documents, self.bert_tokenizer, name="train")
+            document_representations, document_sequence_lengths  = encode_documents(train_documents, self.bert_tokenizer, name="train", max_sequences=self.args['bert_batch_size'])
 
         correct_output = torch.FloatTensor(train_labels)
 
@@ -244,14 +244,14 @@ class BertForDocumentClassification():
                     self.dev_document_sequence_lengths = torch.load("dev_doc_lengths.pt")
                     self.log.info("Loaded pre-tokenized validation data.")
                 except FileNotFoundError:
-                    self.dev_document_representations, self.dev_document_sequence_lengths = encode_documents(data, self.bert_tokenizer, name="dev")
+                    self.dev_document_representations, self.dev_document_sequence_lengths = encode_documents(data, self.bert_tokenizer, name="dev", max_sequences=self.args['bert_batch_size'])
             if isinstance(data, tuple) and len(data) == 2:
                 try:
                     self.dev_document_representations = torch.load("dev_doc_encodings.pt")
                     self.dev_document_sequence_lengths = torch.load("dev_doc_lengths.pt")
                     self.log.info("Loaded pre-tokenized validation data.")
                 except FileNotFoundError:
-                    self.dev_document_representations, self.dev_document_sequence_lengths = encode_documents(data[0], self.bert_tokenizer, name="dev")
+                    self.dev_document_representations, self.dev_document_sequence_lengths = encode_documents(data[0], self.bert_tokenizer, name="dev", max_sequences=self.args['bert_batch_size'])
 
                 self.dev_correct_output = torch.FloatTensor(data[1]).transpose(0,1)
                 assert self.args['labels'] is not None
